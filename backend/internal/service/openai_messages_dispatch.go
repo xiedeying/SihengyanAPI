@@ -63,9 +63,9 @@ func (g *Group) ResolveMessagesDispatchModel(requestedModel string) string {
 	if g == nil {
 		return ""
 	}
-	// OpenCode 与国产平台的 /messages 是原生 Anthropic 端点，模型名直接透传，
-	// 不做 claude→gpt 映射（那是 OpenAI 平台特有的兼容桥）。
-	if g.Platform == PlatformOpencode || IsCNProvider(g.Platform) {
+	// OpenCode、国产平台与 API 聚合渠道的 /messages 是原生 Anthropic 端点，
+	// 模型名直接透传，不做 claude→gpt 映射（那是 OpenAI 平台特有的兼容桥）。
+	if g.Platform == PlatformOpencode || IsRelayUpstreamProvider(g.Platform) {
 		return ""
 	}
 	requestedModel = strings.TrimSpace(requestedModel)
@@ -111,11 +111,14 @@ func (g *Group) ResolveMessagesDispatchModel(requestedModel string) string {
 }
 
 func sanitizeGroupMessagesDispatchFields(g *Group) {
-	if g == nil || g.Platform == PlatformOpenAI {
+	// OpenAI 与 Devin 分组的 /v1/messages 均为桥接实现，沿用显式开关语义：
+	// 是否放行由 allow_messages_dispatch 决定，claude→目标模型映射仅对 OpenAI 生效。
+	if g == nil || g.Platform == PlatformOpenAI || g.Platform == PlatformDevin {
 		return
 	}
-	if g.Platform == PlatformOpencode || IsCNProvider(g.Platform) {
-		// OpenCode 与国产平台的 /messages 是原生 Anthropic 端点：放行入口，但清空 claude→gpt 映射。
+	if g.Platform == PlatformOpencode || IsRelayUpstreamProvider(g.Platform) {
+		// OpenCode、国产平台与 API 聚合渠道的 /messages 是原生 Anthropic 端点：
+		// 放行入口，但清空 claude→gpt 映射。
 		g.AllowMessagesDispatch = true
 		g.DefaultMappedModel = ""
 		g.MessagesDispatchModelConfig = OpenAIMessagesDispatchModelConfig{}

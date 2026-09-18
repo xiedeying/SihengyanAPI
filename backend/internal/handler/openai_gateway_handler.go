@@ -29,6 +29,7 @@ import (
 // OpenAIGatewayHandler handles OpenAI API gateway requests
 type OpenAIGatewayHandler struct {
 	gatewayService             *service.OpenAIGatewayService
+	devinGatewayService        *service.DevinGatewayService
 	billingCacheService        *service.BillingCacheService
 	apiKeyService              *service.APIKeyService
 	usageRecordWorkerPool      *service.UsageRecordWorkerPool
@@ -237,6 +238,11 @@ func NewOpenAIGatewayHandler(
 		maxAccountSwitches:         maxAccountSwitches,
 		cfg:                        cfg,
 	}
+}
+
+// SetDevinGatewayService 注入 Devin 平台转发服务（wire 后装配，同 grok prober 模式）。
+func (h *OpenAIGatewayHandler) SetDevinGatewayService(devinGatewayService *service.DevinGatewayService) {
+	h.devinGatewayService = devinGatewayService
 }
 
 // noAccountBackoffThrottledMessage 命中"无可用账号"退避时的 429 提示。
@@ -942,7 +948,12 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			})
 		}
 		upstreamAttemptID := h.beginOpenAIUpstreamAttempt(c, currentAPIKey, account)
-		result, err := h.gatewayService.ForwardWithAnalysis(forwardCtx, c, account, forwardBody, forwardAnalysis)
+		var result *service.OpenAIForwardResult
+		if account.IsDevin() {
+			result, err = h.forwardDevinResponses(forwardCtx, c, account, forwardBody, sessionHash, &streamStarted)
+		} else {
+			result, err = h.gatewayService.ForwardWithAnalysis(forwardCtx, c, account, forwardBody, forwardAnalysis)
+		}
 		cancelForward()
 		cyberPolicyHit, _ := h.recordCyberPolicyHitForAttempt(dispatchCtx, c, currentAPIKey, upstreamAttemptID)
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
@@ -1676,7 +1687,12 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			})
 		}
 		upstreamAttemptID := h.beginOpenAIUpstreamAttempt(c, currentAPIKey, account)
-		result, err := h.gatewayService.ForwardAsAnthropic(forwardCtx, c, account, forwardBody, promptCacheKey, defaultMappedModel)
+		var result *service.OpenAIForwardResult
+		if account.IsDevin() {
+			result, err = h.forwardDevinAnthropic(forwardCtx, c, account, forwardBody, sessionHash, &streamStarted)
+		} else {
+			result, err = h.gatewayService.ForwardAsAnthropic(forwardCtx, c, account, forwardBody, promptCacheKey, defaultMappedModel)
+		}
 		cancelForward()
 		cyberPolicyHit, _ := h.recordCyberPolicyHitForAttempt(c.Request.Context(), c, currentAPIKey, upstreamAttemptID)
 
@@ -2152,6 +2168,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		// Grok has a separate xAI Responses WS protocol and must not be accepted
 		// here only to fail later in the OpenAI protocol resolver.
 		h.errorResponse(c, http.StatusNotImplemented, "unsupported_protocol", "Grok Responses WebSocket is not supported on this endpoint; use the Grok HTTP Responses or Voice Realtime endpoint")
+		return
+	}
+	if isDevinGroupRequest(c) {
+		h.errorResponse(c, http.StatusNotImplemented, "unsupported_protocol", "Devin groups only support /v1/chat/completions")
 		return
 	}
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
