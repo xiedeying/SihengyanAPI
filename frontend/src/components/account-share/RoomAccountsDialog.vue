@@ -15,7 +15,7 @@
           <span>{{ t('accountShare.roomAccounts.platform') }}</span>
           <strong>{{ listing.platform }}</strong>
         </div>
-        <div class="room-summary-cell">
+        <div v-if="platformHasAccountLevel(listing.platform)" class="room-summary-cell">
           <span>{{ t('accountShare.roomAccounts.level') }}</span>
           <strong>{{ listing.account_level || 'unknown' }}</strong>
         </div>
@@ -151,7 +151,7 @@
                     {{ account.account_name }}
                   </strong>
                   <span class="mt-1 block text-xs text-gray-500 dark:text-dark-300">
-                    #{{ account.account_id }} · {{ account.platform }} · {{ account.account_level }}
+                    #{{ account.account_id }} · {{ account.platform }}<template v-if="platformHasAccountLevel(account.platform)"> · {{ account.account_level }}</template>
                   </span>
                 </span>
                 <span :class="roomAccountHealthBadgeClass(account)">
@@ -209,10 +209,14 @@
         <div
           class="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800 dark:border-emerald-900/70 dark:bg-emerald-950/25 dark:text-emerald-200"
         >
-          {{ t('accountShare.roomAccounts.addHint', {
-            platform: listing?.platform || '',
-            level: listing?.account_level || 'unknown'
-          }) }}
+          {{ platformHasAccountLevel(listing?.platform)
+            ? t('accountShare.roomAccounts.addHint', {
+              platform: listing?.platform || '',
+              level: listing?.account_level || 'unknown'
+            })
+            : t('accountShare.roomAccounts.addHintWithoutLevel', {
+              platform: listing?.platform || ''
+            }) }}
         </div>
 
         <div class="create-compatible-account-card">
@@ -315,7 +319,7 @@
                   <span class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-gray-500 dark:text-dark-300">
                     <span>#{{ account.id }}</span>
                     <span>· {{ account.platform }}</span>
-                    <span class="account-level-badge">{{ account.account_level }}</span>
+                    <span v-if="platformHasAccountLevel(account.platform)" class="account-level-badge">{{ account.account_level }}</span>
                   </span>
                 </span>
                 <span :class="candidateHealthBadgeClass(account)">
@@ -642,9 +646,8 @@ const addableCandidateCount = computed(() => (
 
 const canCreateCompatibleAccount = computed(() => {
   const platform = normalizeComparableValue(props.listing?.platform)
-  const allowsUnknownLevel = platform === 'opencode' || platform === 'kimi' || platform === 'zhipu' || platform === 'deepseek' || platform === 'minimax' || platform === 'qwen' || platform === 'devin' || platform === 'api_aggregation'
-  return (platform === 'openai' || platform === 'anthropic' || allowsUnknownLevel)
-    && (allowsUnknownLevel || isKnownLevel(props.listing?.account_level))
+  const supported = platform === 'openai' || platform === 'anthropic' || !platformHasAccountLevel(platform)
+  return supported && (!platformHasAccountLevel(platform) || isKnownLevel(props.listing?.account_level))
 })
 
 const allVisibleMembersSelected = computed(() => (
@@ -722,8 +725,21 @@ function isKnownLevel(value: unknown): boolean {
   return Boolean(level && level !== 'unknown')
 }
 
-function isOpencodePlatform(value: unknown): boolean {
-  return normalizeComparableValue(value) === 'opencode'
+// 与后端 PlatformHasAccountLevel 对齐：opencode/devin/CN 平台/api_aggregation
+// 没有账号等级概念（account_level 恒为 unknown），跳过等级校验。
+const LEVEL_LESS_PLATFORMS: ReadonlySet<string> = new Set([
+  'opencode',
+  'devin',
+  'kimi',
+  'zhipu',
+  'deepseek',
+  'minimax',
+  'qwen',
+  'api_aggregation',
+])
+
+function platformHasAccountLevel(platform: unknown): boolean {
+  return !LEVEL_LESS_PLATFORMS.has(normalizeComparableValue(platform))
 }
 
 function isRoomAccountHealthy(account: AccountShareRoomAccount): boolean {
@@ -804,8 +820,7 @@ function candidateDisabledReason(account: Account): string {
     })
   }
 
-  // opencode/api_aggregation 账号没有等级概念（account_level 恒为 unknown），跳过等级校验。
-  if (!isOpencodePlatform(listing.platform) && normalizeComparableValue(listing.platform) !== 'api_aggregation') {
+  if (platformHasAccountLevel(listing.platform)) {
     if (!isKnownLevel(listing.account_level)) {
       return t('accountShare.roomAccounts.roomLevelUnknown')
     }
@@ -945,6 +960,19 @@ async function confirmRemoveAccounts(): Promise<void> {
   }
 }
 
+function fallbackUUIDv4(): string {
+  const cryptoObj = globalThis.crypto
+  if (cryptoObj?.getRandomValues) {
+    const bytes = new Uint8Array(16)
+    cryptoObj.getRandomValues(bytes)
+    bytes[6] = (bytes[6] & 0x0f) | 0x40
+    bytes[8] = (bytes[8] & 0x3f) | 0x80
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  }
+  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 14)}`
+}
+
 function buildIdempotencyKey(
   operation: RoomAccountOperation,
   roomID: number,
@@ -961,10 +989,9 @@ function buildIdempotencyKey(
   ) {
     return pendingOperationIdempotencyKey
   }
-  const requestID = globalThis.crypto?.randomUUID?.()
-  if (!requestID) {
-    throw new Error(t('accountShare.roomAccounts.uuidUnavailable'))
-  }
+  // randomUUID 需要安全上下文（HTTPS/新版浏览器）；老环境退回
+  // getRandomValues 手写 v4，再不行用时间戳随机串兜底——幂等键只需唯一性。
+  const requestID = globalThis.crypto?.randomUUID?.() || fallbackUUIDv4()
   pendingOperationSignature = signature
   pendingOperationIdempotencyKey = `room-${operation}-${roomID}-${requestID}`
   return pendingOperationIdempotencyKey
